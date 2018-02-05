@@ -10,6 +10,7 @@ boolean Direction = true;
 int Steps_Read = 0;
 int Steps_Write = 0;
 int Steps;
+boolean Continuous = false;
 
 
 const int ledPin = 2; //diagnostic LED
@@ -66,7 +67,8 @@ void loop() {
      //turn on
      digitalWrite(ledPin, HIGH);
      //motorControl(1,0); //
-     Steps_Write = 1;
+     Steps_Write = 200;
+     REFRESH_INTERVAL = 900;
      replymanualpc();
      
   } else {
@@ -76,7 +78,13 @@ void loop() {
      digitalWrite(ledPin, LOW);
 
      if (Steps_Read == 32767){
-      Steps_Write= 1; 
+      Continuous = true; 
+     } else {
+      Continuous = false;
+     }
+
+     if (Continuous == true){
+      Steps_Write = 200;
      } else {
       Steps_Write = Steps_Read;
      }
@@ -254,11 +262,11 @@ void replyToPC() {
   if (newDataFromPC) {
     newDataFromPC = false;
     Serial.print("<");
-    Serial.print(msg1);
+    Serial.print("MTRCNTRL");
     Serial.print(",");
-    Serial.print(msg2);
+    Serial.print(Steps_Write);
     Serial.print(",");
-    Serial.print(msg3);
+    Serial.print(REFRESH_INTERVAL);
     Serial.println(">");
   }
 }
@@ -270,7 +278,7 @@ void replymanualpc(){
     Serial.print("<");
     Serial.print("Man");
     Serial.print(",");
-    Serial.print(10);
+    Serial.print(200);
     Serial.print(",");
     Serial.print(REFRESH_INTERVAL);
     Serial.println(">");
