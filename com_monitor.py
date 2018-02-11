@@ -88,6 +88,7 @@ class ComMonitorThread(threading.Thread):
             if send_data:
                 write_string = send_data.encode('utf-8')
                 self.serial_port.write(write_string)
+                print("sending: %s" % send_data)
              
             
         # clean up

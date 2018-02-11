@@ -20,7 +20,7 @@ const int photo_in = 5; //analog 5
 //init changing variables
 int buttonState = 0;
 
-//1 second task rate
+//task rate
 unsigned long REFRESH_INTERVAL = 900; //micros
 unsigned long lastRefreshTime = 0;
 unsigned long last_write = 0;
@@ -84,10 +84,12 @@ void loop() {
      }
 
      if (Continuous == true){
-      Steps_Write = 200;
-     } else {
+      Steps_Write = 20;
+     } else if (Steps_Read<32767) {
       Steps_Write = Steps_Read;
+      Steps_Read = 0;
      }
+     //Steps_Read = 0;
   }
      last_write = micros();
      motorControl(Steps_Write, last_write);  // msg2 is number of steps commanded from PC.  abstracted var name for future msg def
@@ -251,7 +253,7 @@ void parseData() {
   msg3 = atof(strtokIndx);     // convert this part to a float
 
   REFRESH_INTERVAL = msg3;
-  Steps = msg2;
+  Steps_Read = msg2;
 
 }
 
@@ -264,7 +266,7 @@ void replyToPC() {
     Serial.print("<");
     Serial.print("MTRCNTRL");
     Serial.print(",");
-    Serial.print(Steps_Write);
+    Serial.print(Steps_Read);
     Serial.print(",");
     Serial.print(REFRESH_INTERVAL);
     Serial.println(">");
