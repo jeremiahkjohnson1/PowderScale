@@ -1,17 +1,21 @@
 from threading import Thread
 from imutils.video import VideoStream
 from transitions import Machine
-from transitions.extensions import MachineFactory
 from transitions.extensions.states import add_state_features,Timeout
 import time
 import sys
 import queue
+import logging
 
 from com_monitor import ComMonitorThread, get_last_item_from_queue 
 from com_monitor import get_all_item_from_queue
 
 import cv2
 
+LOG_FORMAT = "%(asctime)s , %(message)s"
+LEVEL = logging.DEBUG
+
+logging.basicConfig(filename = "motor_log.Log", level = LEVEL, format = LOG_FORMAT)
 
 #################################################
 #################################################
@@ -112,6 +116,47 @@ class Object(object):
 			zeros = None
 			
 		return zeros
+	def capture_zero(self):
+		
+		if self.mov_avg[0]:
+			x = self.mov_avg[0]
+			y = self.mov_avg[1]
+			w = self.mov_avg[2]
+			h = self.mov_avg[3]
+
+			self.zero_points.append([x,y,w,h])
+			
+		else:
+			return False
+			 
+		if len(self.zero_points)>=30:
+			x_0_sum = 0
+			y_0_sum = 0
+			w_0_sum = 0
+			h_0_sum = 0
+			
+			for point in self.zero_points:
+				x_0_sum += point[0]
+				y_0_sum += point[1]
+				w_0_sum += point[2]
+				h_0_sum += point[3]
+			n = len(self.zero_points)
+			y_0 = int(y_0_sum/n)
+			x_0 =  int(x_0_sum/n)
+			w_0 =  int(w_0_sum/n)
+			h_0 =  int(h_0_sum/n)
+			
+			X1_0 = x_0-w_0   #wide zero line
+			X2_0 = x_0+w_0	#wide zero line
+			Y_0 = y_0+int(h_0/2) #zero through middle of rectangle	
+			
+			self.zero = [y_0, X1_0,X2_0,Y_0]
+			
+			return True
+		else:
+			return False
+		
+		
 #################################################
 #################################################
 #    Defining State Machine
@@ -127,24 +172,19 @@ class CustomStateMachine(Machine):
 class MotorMachine(CustomStateMachine):
 	#https://github.com/pytransitions/transitions/issues/198
 	
-	def __init__(self):
-		#states = ['off', 'waiting','slow', 'fast', 'zero', 'slowManual', 'fastManual']
-		#'off', 'on', 'continuous', 'trickle'
-		states = ['off','on','continuous','trickle', 'shutting_down',
-			 {'name': 'waiting', 'timeout': 0.5, 'on_timeout': 'timeout'}]
-		#transitions = [
-			#{'trigger': 'GoFast', 'source': 'off', 'dest': 'fast'},
-			#{'trigger': , 'source': , 'dest':},
-			#{'trigger': 'Step', 'source': 'fast', 'dest':'slow'}
-		#]
+	def __init__(self,video_source):
 		
+		states = ['off','on','continuous','trickle', 'shutting_down', 'zero',
+			 {'name': 'waiting', 'timeout': 0.5, 'on_timeout': 'timeout'}]
+		
+		self.logger = logging.getLogger()
 
 
 		
 		Machine.__init__(self, states=states,initial='off')
 		#machine.add_transition('heat', 'solid', 'gas', conditions='is_flammable')
-		self.add_transition(trigger='autoPressed', source='off',dest='on')
-		self.add_transition(trigger='update', source='*',dest='on',conditions='is_zerod')
+		self.add_transition(trigger='autoPressed', source='*',dest='on')
+		#self.add_transition(trigger='update', source='*',dest='on',conditions='is_zerod')
 		self.add_transition(trigger='update', source='on',dest='off',conditions='is_at_target')
 		#self.add_transition(trigger='update', source='continuous',dest='off',conditions='is_at_target')
 		self.add_transition(trigger='update', source='on',dest='continuous',conditions='is_far')
@@ -153,11 +193,30 @@ class MotorMachine(CustomStateMachine):
 		self.add_transition(trigger='update', source='continuous',dest='trickle',conditions='is_near')
 		self.add_transition(trigger='update', source='trickle',dest='off',conditions='is_at_target')
 		self.add_transition(trigger='update', source='waiting',dest='continuous', conditions='is_manual')
-		self.add_transition(trigger='shutdown', source='*',dest='shutting_down')
+		self.add_transition(trigger='shutdown', source='*',dest='shutting_down',after='on_stop')
+		self.add_transition(trigger='zeroPressed', source='*',dest='zero')
+		self.add_transition(trigger='zeroComplete', source='zero',dest='off')
+		self.add_transition(trigger='touch', source = ['zero','off'], dest = '=')
+		self.add_transition(trigger='wait', source='trickle',dest='waiting')
 		
+		#auto key dictionary
+			#0: no key/unknown key
+			#1: n - auto
+			#2: g - fast manual
+			#3: h - slow manual
+			#13: z - zero
+			#14: q - quit/shutdown
+			#15: unknown/error
+			
+		self.auto_key = {ord('n'):1,ord('g'):2, ord('h'):3,ord('z'):13, ord('q'):14,}
+		
+		self.auto = 0
+		
+		self.auto_events = {0:'',1:self.autoPressed, 2:'', 3:'', 13:self.zeroPressed, 14:self.shutdown}
+		self.next_event = self.touch
 		
 		self.beam_tracker = Object()
-		self.vs  = VideoStream(src=2, usePiCamera=False, resolution=(640, 480), framerate=20).start()
+		self.vs  = VideoStream(src=video_source, usePiCamera=False, resolution=(640, 480), framerate=30).start()
 		
 		self.beam_cascade = cv2.CascadeClassifier('info-beam/cascade.xml')
 				
@@ -184,33 +243,41 @@ class MotorMachine(CustomStateMachine):
 		self.readInProgress = False
 		self.inputBuffer = ''
 		
-		#auto key dictionary
-			#0: no key/unknown key
-			#1: n - auto
-			#2: g - fast manual
-			#3: h - slow manual
-			#13: z - zero
-			#14: q - quit/shutdown
-			#15: unknown/error
-			
-		self.auto_key = {'n':1,'g':2, 'h':3,'z':13, 'q':14,}
-		self.auto = 0
+		
 			
 	###############
 	##  Conditions
 	##############
 	 
 	def is_auto_pressed(self):
+		
 		if self.auto==1:
+			print("checking auto")
 			return True
 		else:
 			return False
+			
+	def is_zero_pressed(self):
+		if self.auto==13:
+			return True
+		else:
+			return False
+			
 	def is_manual(self):
 		print("checking")
 		if self.auto==2:
 			return True
 		else:
 			return False
+			
+	def is_shutdown_request(self):
+		
+		if self.auto==14:
+			return True
+			print("Shutting Down Now")
+		else:
+			return False
+			
 	def is_at_target(self):
 		if self.distance <= 1:
 			return True
@@ -239,6 +306,22 @@ class MotorMachine(CustomStateMachine):
 	def on_enter_continuous(self):
 		print ("\tcontinuous mode")
 		self.write_serial_data(send_steps=32767, update_freq=900)
+		self.next_event = self.update
+		
+	def on_enter_zero(self):
+		done = self.beam_tracker.capture_zero()
+		if not done:
+			self.next_event =  self.touch 
+		else: self.next_event = self.off
+		
+	def on_enter_off(self):
+			self.next_event = self.touch
+
+	def on_enter_waiting(self):
+			self.next_event = self.update
+			
+	def on_enter_on(self):
+		self.next_event = self.update
 	#def on_enter_on(self, auto, distance):
 		#print("\ton")
 		#if self.is_far(auto,distance):
@@ -251,7 +334,7 @@ class MotorMachine(CustomStateMachine):
 	def on_enter_trickle(self):
 		print("\ttrickling")
 		self.write_serial_data(send_steps=300, update_freq=2000)
-		self.to_waiting()
+		self.next_event = self.wait
 			
 	def on_exit_continuous(self):
 		print ("\texiting continuous")
@@ -280,17 +363,31 @@ class MotorMachine(CustomStateMachine):
 		while True:
 			self.read_serial_data(self.data_q, self.readInProgress, self.newData)
 			self.next_frame()
+			
+			print(self.state)
 			if self.beam_tracker.mov_avg[0] and self.beam_tracker.zero:
-				self.distance = self.beam_tracker.mov_avg[1]> self.beam_tracker.zero[1]
+				self.distance = self.beam_tracker.mov_avg[1]- self.beam_tracker.zero[1]
 			else:
 				self.distance = None
 			
+			next_event = self.eventHandler()
 			
+			if next_event:
+				next_event()
+	
+	def eventHandler(self):
+		
+		next_event = ''
+		if self.auto:  #manual override of current states
+				next_event =self.auto_events[self.auto]
+		
+		if next_event:
+			return next_event
+		else:
+			return self.next_event
+		
+				
 			
-			if self.is_auto_pressed():
-				self.autoPressed()
-			else:
-				self.update()
 	
 	###############
 	##  Image Processing
@@ -302,11 +399,14 @@ class MotorMachine(CustomStateMachine):
 		cv2.imshow("Frame", new_frame)
 		
 		key = cv2.waitKey(1) & 0xFF
-				 
+		
+		#print(key)	 
 		try:
 			self.auto = self.auto_key[key]
+			#print(self.auto, key)
 		except:
 			self.auto =0 #unknown
+			#print("unknown")
 			
 		
 	def processFrame(self):
@@ -316,23 +416,24 @@ class MotorMachine(CustomStateMachine):
 			z = self.beam_tracker.zero
 		
 			x,y,w,h = self.beam_tracker.update(beams)
+			#print('%i %i %i %i' % (x,y,w,h))
 			
 			if z:
 				self.drawline(frame, (z[1],z[3]),(z[2],z[3]),(0,0,255),5)
 			
-			if x:
+			if x and y and w and h:
 				#cv2.rectangle(frame, (x,y), (x+w), y+h), (0,255,0),2)
 				x1 = x-int(w/2)
 				x2 = x+int(w/2)
 				y1 = y+int(h/2)
 				y2 = y1
 				
-				self.drawline(frame, (x1,y1),(x1,y1),(0,255,0),3)
+				self.drawline(frame, (x1,y1),(x2,y1),(0,255,0),3)
 		
 			return frame
 			
-	def drawline(f,points,linewidth, color):
-		cv2.line(f, (points[1],points[3]),(points[2],points[3]),(0,0,255),linewidth)
+	def drawline(self,f,points1,points2, color, linewidth):
+		cv2.line(f, points1,points2,color,linewidth)
 		
 	def detect(self,frame):
 		gray_image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -381,11 +482,11 @@ class MotorMachine(CustomStateMachine):
 			print("error parsing serial")
 			print(self.inputBuffer)
 		self.newData = False
-		
+	
 		
 
 def main():
-	m = MotorMachine()
+	m = MotorMachine(3)
 	m.run()
 
 if __name__ == '__main__':

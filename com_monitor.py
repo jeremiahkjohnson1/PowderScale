@@ -66,8 +66,8 @@ class ComMonitorThread(threading.Thread):
             if self.serial_port: 
                 self.serial_port.close()
             self.serial_port = serial.Serial(**self.serial_arg)
-        except (serial.SerialException, e):
-            self.error_q.put(e.message)
+        except: #(serial.SerialException, e):
+            self.error_q.put('error')#e.message)
             return
         
         # Restart the clock
