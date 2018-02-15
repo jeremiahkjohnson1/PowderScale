@@ -188,6 +188,10 @@ class MotorMachine(CustomStateMachine):
 		self.add_transition(trigger='update', source='on',dest='off',conditions='is_at_target')
 		#self.add_transition(trigger='update', source='continuous',dest='off',conditions='is_at_target')
 		self.add_transition(trigger='update', source='on',dest='continuous',conditions='is_far')
+		self.add_transition(trigger='manualFast', source='*',dest='continuous', unless='is_state_continuous')
+		self.add_transition(trigger='manualFast', source='continuous',dest='off',conditions='is_state_continuous')
+		self.add_transition(trigger='manualSlow', source='*',dest='trickleMan')
+		self.add_transition(trigger='manualSlow', source='trickleMan',dest='off')
 		self.add_transition(trigger='update', source='on',dest='trickle',conditions='is_near')
 		self.add_transition(trigger='update', source='continuous',dest='off',conditions='is_at_target')
 		self.add_transition(trigger='update', source='continuous',dest='trickle',conditions='is_near')
@@ -212,7 +216,7 @@ class MotorMachine(CustomStateMachine):
 		
 		self.auto = 0
 		
-		self.auto_events = {0:'',1:self.autoPressed, 2:'', 3:'', 13:self.zeroPressed, 14:self.shutdown}
+		self.auto_events = {0:'',1:self.autoPressed, 2:self.manualFast, 3:'', 13:self.zeroPressed, 14:self.shutdown}
 		self.next_event = self.touch
 		
 		self.beam_tracker = Object()
@@ -299,6 +303,12 @@ class MotorMachine(CustomStateMachine):
 			return True
 		else:
 			return False
+			
+	def is_state_continuous(self):
+		if self.state == 'continuous':
+			return True
+		else:
+			return False
    
 	###############
 	##  Call Backs
@@ -335,6 +345,11 @@ class MotorMachine(CustomStateMachine):
 		print("\ttrickling")
 		self.write_serial_data(send_steps=300, update_freq=2000)
 		self.next_event = self.wait
+		
+	def on_enter_trickleMan(self):
+		print("\ttrickling Manual")
+		self.write_serial_data(send_steps=300, update_freq=2000)
+		self.next_event = self.manualSlow
 			
 	def on_exit_continuous(self):
 		print ("\texiting continuous")
