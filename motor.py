@@ -38,7 +38,7 @@ class Object(object):
 		self.mov_avg_buff = [[],[],[],[]]  
 		
 		#averaging window length.  If only one object is detected, windown length is number of frames
-		self.buff_len = 10
+		self.buff_len = 20
 		
 		#read last know zero point from params file
 		self.zero =self.get_zeros()
@@ -152,6 +152,11 @@ class Object(object):
 			
 			self.zero = [y_0, X1_0,X2_0,Y_0]
 			
+			line = ("%i,%i,%i,%i" % (x_0, y_0, w_0,h_0))
+			with open("params.dat", 'w') as fp:
+				fp.write(line)
+			self.zero_points = []
+			
 			return True
 		else:
 			return False
@@ -174,8 +179,8 @@ class MotorMachine(CustomStateMachine):
 	
 	def __init__(self,video_source):
 		
-		states = ['off','on','continuous','trickle', 'shutting_down', 'zero',
-			 {'name': 'waiting', 'timeout': 0.5, 'on_timeout': 'timeout'}]
+		states = ['off','on','continuous','continuousClose','trickle', 'shutting_down', 'zero',
+			 {'name': 'waiting', 'timeout': 2, 'on_timeout': 'timeout'}]
 		
 		self.logger = logging.getLogger()
 
@@ -188,13 +193,16 @@ class MotorMachine(CustomStateMachine):
 		self.add_transition(trigger='update', source='on',dest='off',conditions='is_at_target')
 		#self.add_transition(trigger='update', source='continuous',dest='off',conditions='is_at_target')
 		self.add_transition(trigger='update', source='on',dest='continuous',conditions='is_far')
+		self.add_transition(trigger='update', source='on',dest='continuousClose',conditions='is_close')
+		self.add_transition(trigger='update', source='continuous',dest='continuousClose',conditions='is_close')
 		self.add_transition(trigger='manualFast', source='*',dest='continuous', unless='is_state_continuous')
 		self.add_transition(trigger='manualFast', source='continuous',dest='off',conditions='is_state_continuous')
 		self.add_transition(trigger='manualSlow', source='*',dest='trickleMan')
 		self.add_transition(trigger='manualSlow', source='trickleMan',dest='off')
 		self.add_transition(trigger='update', source='on',dest='trickle',conditions='is_near')
-		self.add_transition(trigger='update', source='continuous',dest='off',conditions='is_at_target')
+		self.add_transition(trigger='update', source='*',dest='off',conditions='is_at_target')
 		self.add_transition(trigger='update', source='continuous',dest='trickle',conditions='is_near')
+		self.add_transition(trigger='update', source='continuousClose',dest='trickle',conditions='is_near')
 		self.add_transition(trigger='update', source='trickle',dest='off',conditions='is_at_target')
 		self.add_transition(trigger='update', source='waiting',dest='continuous', conditions='is_manual')
 		self.add_transition(trigger='shutdown', source='*',dest='shutting_down',after='on_stop')
@@ -283,21 +291,40 @@ class MotorMachine(CustomStateMachine):
 			return False
 			
 	def is_at_target(self):
-		if self.distance <= 1:
-			return True
+		print("distance: ",self.distance)
+		if self.distance:
+			if self.distance <= 0:
+				return True
 		else:
 			return False
 		
 	def is_far(self):
-		if self.distance>20:
-			return True
+		if self.distance:
+			if self.distance>50:
+				return True
+			else:
+				return False
 		else:
 			return False
+			
+	def is_close(self):
+		if self.distance:
+			if self.distance>10 and self.distance<=50:
+				return True
+			else:
+				return False
+		else:
+			return False		
+	
 	def is_near(self):
-		if self.distance<=20 and not self.is_at_target():
-			return True
+		if self.distance:
+			if self.distance<=5 and not self.is_at_target():
+				return True
+			else:
+				return False
 		else:
 			return False
+			
 	def is_zerod(self):
 		if self.beam_tracker.zero[0]:
 			return True
@@ -318,12 +345,19 @@ class MotorMachine(CustomStateMachine):
 		self.write_serial_data(send_steps=32767, update_freq=900)
 		self.next_event = self.update
 		
+	def on_enter_continuousClose(self):
+		print ("\tcontinuous mode")
+		self.write_serial_data(send_steps=32767, update_freq=3000)
+		self.next_event = self.update
+		
 	def on_enter_zero(self):
 		done = self.beam_tracker.capture_zero()
 		if not done:
+			print("##      not zerod    #######3")
 			self.next_event =  self.touch 
-		else: self.next_event = self.off
-		
+		else: 
+			self.next_event = self.zeroComplete
+			print("....done zero......")
 	def on_enter_off(self):
 			self.next_event = self.touch
 
@@ -343,17 +377,21 @@ class MotorMachine(CustomStateMachine):
 	
 	def on_enter_trickle(self):
 		print("\ttrickling")
-		self.write_serial_data(send_steps=300, update_freq=2000)
+		self.write_serial_data(send_steps=300, update_freq=2500)
 		self.next_event = self.wait
 		
 	def on_enter_trickleMan(self):
 		print("\ttrickling Manual")
-		self.write_serial_data(send_steps=300, update_freq=2000)
+		self.write_serial_data(send_steps=300, update_freq=2500)
 		self.next_event = self.manualSlow
 			
 	def on_exit_continuous(self):
 		print ("\texiting continuous")
 		self.write_serial_data(send_steps=0, update_freq=900)
+		
+	def on_exit_continuousClose(self):
+		print ("\texiting continuous")
+		self.write_serial_data(send_steps=0, update_freq=2500)
 		
 	def timeout(self):
 		print("Timeout!")
@@ -381,7 +419,11 @@ class MotorMachine(CustomStateMachine):
 			
 			print(self.state)
 			if self.beam_tracker.mov_avg[0] and self.beam_tracker.zero:
-				self.distance = self.beam_tracker.mov_avg[1]- self.beam_tracker.zero[1]
+				try:
+					self.distance = self.beam_tracker.mov_avg[1]- self.beam_tracker.zero[0]
+					print("distance: ",self.distance)
+				except:
+					self.distance = None
 			else:
 				self.distance = None
 			
@@ -501,7 +543,7 @@ class MotorMachine(CustomStateMachine):
 		
 
 def main():
-	m = MotorMachine(3)
+	m = MotorMachine(0)
 	m.run()
 
 if __name__ == '__main__':
